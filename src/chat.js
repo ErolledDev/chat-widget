@@ -326,9 +326,10 @@ class ChatWidget {
   }
 }
 
-// Explicitly assign ChatWidget to the window object
+// Make ChatWidget available globally
 if (typeof window !== 'undefined') {
   window.ChatWidget = ChatWidget;
 }
 
+// Also export for module usage
 export { ChatWidget }
