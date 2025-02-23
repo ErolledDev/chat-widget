@@ -1,5 +1,5 @@
 // Standalone chat widget script
-export class ChatWidget {
+class ChatWidget {
   constructor(options = {}) {
     // Ensure this is only initialized in browser environment
     if (typeof window === 'undefined') return;
@@ -326,7 +326,9 @@ export class ChatWidget {
   }
 }
 
-// Initialize the widget if it's loaded as a script
+// Explicitly assign ChatWidget to the window object
 if (typeof window !== 'undefined') {
   window.ChatWidget = ChatWidget;
 }
+
+export { ChatWidget }
