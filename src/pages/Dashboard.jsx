@@ -2,240 +2,353 @@ import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { HexColorPicker } from 'react-colorful';
 import { supabase } from '../supabase';
-import { ChatWidget } from '../chat';
+import toast from 'react-hot-toast';
+import { ClipboardDocumentIcon, ArrowLeftOnRectangleIcon } from '@heroicons/react/24/outline';
 
 export default function Dashboard({ session }) {
   const navigate = useNavigate();
   const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
   const [settings, setSettings] = useState({
     primaryColor: '#2563eb',
     businessName: '',
     businessInfo: '',
-    salesRepName: '',
+    salesRepName: ''
   });
   const [showCode, setShowCode] = useState(false);
+  const [showColorPicker, setShowColorPicker] = useState(false);
 
   useEffect(() => {
-    if (session) {
-      getSettings();
+    let mounted = true;
+
+    async function loadSettings() {
+      try {
+        if (!session?.user?.id) return;
+
+        const { data, error } = await supabase
+          .from('widget_settings')
+          .select('*')
+          .eq('user_id', session.user.id)
+          .single();
+
+        if (!mounted) return;
+
+        if (error) {
+          if (error.code === 'PGRST116') { // Not found error
+            // Create default settings
+            const defaultSettings = {
+              user_id: session.user.id,
+              primary_color: '#2563eb',
+              business_name: '',
+              business_info: '',
+              sales_rep_name: ''
+            };
+
+            const { data: insertedData, error: insertError } = await supabase
+              .from('widget_settings')
+              .insert(defaultSettings)
+              .select()
+              .single();
+
+            if (insertError) throw insertError;
+            
+            if (insertedData) {
+              setSettings({
+                primaryColor: insertedData.primary_color,
+                businessName: insertedData.business_name,
+                businessInfo: insertedData.business_info,
+                salesRepName: insertedData.sales_rep_name
+              });
+            }
+          } else {
+            throw error;
+          }
+        } else if (data) {
+          setSettings({
+            primaryColor: data.primary_color,
+            businessName: data.business_name,
+            businessInfo: data.business_info,
+            salesRepName: data.sales_rep_name
+          });
+        }
+        
+        setShowCode(true);
+      } catch (error) {
+        console.error('Error loading settings:', error);
+        if (mounted) {
+          toast.error('Error loading settings. Please try again.');
+        }
+      } finally {
+        if (mounted) {
+          setLoading(false);
+        }
+      }
     }
+
+    loadSettings();
+
+    return () => {
+      mounted = false;
+      const existingWidget = document.querySelector('.chat-widget');
+      if (existingWidget) {
+        existingWidget.remove();
+      }
+    };
   }, [session]);
 
-  async function getSettings() {
-    try {
-      setLoading(true);
-      
-      let { data, error } = await supabase
-        .from('widget_settings')
-        .select('*')
-        .eq('user_id', session.user.id)
-        .order('created_at', { ascending: false })
-        .limit(1);
-
-      if (error) throw error;
-
-      if (data && data.length > 0) {
-        const latestSettings = data[0];
-        setSettings({
-          primaryColor: latestSettings.primary_color,
-          businessName: latestSettings.business_name,
-          businessInfo: latestSettings.business_info,
-          salesRepName: latestSettings.sales_rep_name,
-        });
-      } else {
-        const defaultSettings = {
-          user_id: session.user.id,
-          primary_color: '#2563eb',
-          business_name: '',
-          business_info: '',
-          sales_rep_name: '',
-        };
-
-        const { error: insertError } = await supabase
-          .from('widget_settings')
-          .insert(defaultSettings);
-
-        if (insertError) throw insertError;
+  // Initialize widget when settings change
+  useEffect(() => {
+    if (!loading && session?.user?.id) {
+      const existingWidget = document.querySelector('.chat-widget');
+      if (existingWidget) {
+        existingWidget.remove();
       }
-    } catch (error) {
-      console.error('Error loading settings:', error);
-      alert('Error loading settings. Please try again.');
-    } finally {
-      setLoading(false);
+
+      const baseUrl = window.location.hostname.includes('localhost') || window.location.hostname.includes('127.0.0.1')
+        ? window.location.origin
+        : 'https://chatwidgetai.netlify.app';
+
+      const script = document.createElement('script');
+      script.src = `${baseUrl}/chat.js`;
+      script.async = true;
+      script.onload = () => {
+        new window.ChatWidget({
+          uid: session.user.id,
+          ...settings
+        });
+      };
+      document.head.appendChild(script);
     }
-  }
+  }, [loading, session, settings]);
 
-  async function updateSettings() {
+  const handleSettingChange = (key, value) => {
+    setSettings(prev => ({ ...prev, [key]: value }));
+  };
+
+  const updateSettings = async () => {
     try {
-      setLoading(true);
+      setSaving(true);
       
-      await supabase
-        .from('widget_settings')
-        .delete()
-        .eq('user_id', session.user.id);
-
       const { error } = await supabase
         .from('widget_settings')
-        .insert({
+        .upsert({
           user_id: session.user.id,
           primary_color: settings.primaryColor,
           business_name: settings.businessName,
           business_info: settings.businessInfo,
-          sales_rep_name: settings.salesRepName,
+          sales_rep_name: settings.salesRepName
+        }, {
+          onConflict: 'user_id'
         });
 
       if (error) throw error;
-      alert('Settings saved successfully!');
-      setShowCode(true);
 
-      // Initialize widget for preview
-      new ChatWidget(settings);
+      // Fetch updated settings to confirm changes
+      const { data: updatedData, error: fetchError } = await supabase
+        .from('widget_settings')
+        .select('*')
+        .eq('user_id', session.user.id)
+        .single();
+
+      if (fetchError) throw fetchError;
+
+      if (updatedData) {
+        setSettings({
+          primaryColor: updatedData.primary_color,
+          businessName: updatedData.business_name,
+          businessInfo: updatedData.business_info,
+          salesRepName: updatedData.sales_rep_name
+        });
+      }
+
+      toast.success('Settings saved successfully!');
+      setShowCode(true);
     } catch (error) {
       console.error('Error saving settings:', error);
-      alert('Error saving settings. Please try again.');
+      toast.error('Error saving settings. Please try again.');
     } finally {
-      setLoading(false);
+      setSaving(false);
     }
-  }
+  };
 
   const handleSignOut = async () => {
-    const { error } = await supabase.auth.signOut();
-    if (!error) {
-      navigate('/');
+    try {
+      const { error } = await supabase.auth.signOut();
+      if (error) throw error;
+      
+      const existingWidget = document.querySelector('.chat-widget');
+      if (existingWidget) {
+        existingWidget.remove();
+      }
+      
+      toast.success('Signed out successfully');
+      navigate('/', { replace: true });
+    } catch (error) {
+      console.error('Error signing out:', error);
+      toast.error('Error signing out');
     }
   };
 
   const getWidgetCode = () => {
-    const settingsStr = JSON.stringify({
-      primaryColor: settings.primaryColor,
-      businessName: settings.businessName,
-      businessInfo: settings.businessInfo,
-      salesRepName: settings.salesRepName
-    }).replace(/"/g, '&quot;');
+    const baseUrl = window.location.hostname.includes('localhost') || window.location.hostname.includes('127.0.0.1')
+      ? window.location.origin
+      : 'https://chatwidgetai.netlify.app';
 
-    return `<script>
-  (function() {
-    var script = document.createElement('script');
-    script.src = 'https://chatwidgetai.netlify.app/chat.js';
-    script.onload = function() {
-      var settings = JSON.parse('${settingsStr}');
-      window.chatWidget = new ChatWidget(settings);
-    };
-    document.head.appendChild(script);
-  })();
+    return `<!-- AI Chat Widget -->
+<script>
+(function() {
+  var script = document.createElement('script');
+  script.src = '${baseUrl}/chat.js';
+  script.async = true;
+  script.crossOrigin = "anonymous";
+  script.onload = function() {
+    new ChatWidget({
+      uid: '${session.user.id}'
+    });
+  };
+  document.head.appendChild(script);
+})();
 </script>`;
   };
 
   const copyToClipboard = async () => {
     try {
       await navigator.clipboard.writeText(getWidgetCode());
-      alert('Widget code copied to clipboard!');
+      toast.success('Widget code copied to clipboard!');
     } catch (err) {
       console.error('Failed to copy code:', err);
-      alert('Failed to copy code. Please try selecting and copying manually.');
+      toast.error('Failed to copy code. Please try selecting and copying manually.');
     }
   };
 
+  if (loading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <div className="animate-spin rounded-full h-12 w-12 border-4 border-indigo-500 border-t-transparent"></div>
+      </div>
+    );
+  }
+
   return (
-    <div className="min-h-screen bg-gray-100 py-12 px-4 sm:px-6 lg:px-8">
-      <div className="max-w-3xl mx-auto">
-        <div className="bg-white shadow rounded-lg p-6">
-          <div className="flex justify-between items-center mb-6">
-            <h1 className="text-2xl font-bold text-gray-900">
+    <div className="min-h-screen bg-gradient-to-br from-indigo-50 to-white py-12 px-4 sm:px-6 lg:px-8">
+      <div className="max-w-4xl mx-auto">
+        <div className="bg-white shadow-xl rounded-2xl overflow-hidden">
+          <div className="px-6 py-4 bg-indigo-600 flex justify-between items-center">
+            <h1 className="text-2xl font-bold text-white">
               Chat Widget Settings
             </h1>
             <button
               onClick={handleSignOut}
-              className="px-4 py-2 text-sm text-red-600 hover:text-red-800"
+              className="inline-flex items-center px-4 py-2 text-sm text-white hover:bg-indigo-700 rounded-lg transition-colors"
             >
+              <ArrowLeftOnRectangleIcon className="h-5 w-5 mr-2" />
               Sign Out
             </button>
           </div>
 
-          <div className="space-y-6">
-            <div>
-              <label className="block text-sm font-medium text-gray-700">
-                Primary Color
-              </label>
-              <div className="mt-2">
-                <HexColorPicker
-                  color={settings.primaryColor}
-                  onChange={(color) =>
-                    setSettings({ ...settings, primaryColor: color })
-                  }
-                />
+          <div className="p-6 space-y-6">
+            <div className="grid grid-cols-1 gap-6">
+              <div className="bg-gray-50 p-4 rounded-lg">
+                <h2 className="text-lg font-medium text-gray-900 mb-4">Basic Settings</h2>
+                <div className="grid grid-cols-1 gap-4">
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                      Primary Color
+                    </label>
+                    <div className="relative">
+                      <button
+                        type="button"
+                        onClick={() => setShowColorPicker(!showColorPicker)}
+                        className="w-full h-10 rounded-lg border shadow-sm transition-transform hover:scale-105"
+                        style={{ backgroundColor: settings.primaryColor }}
+                      />
+                      {showColorPicker && (
+                        <div className="absolute z-10 mt-2">
+                          <div className="fixed inset-0" onClick={() => setShowColorPicker(false)} />
+                          <HexColorPicker
+                            color={settings.primaryColor}
+                            onChange={(color) => handleSettingChange('primaryColor', color)}
+                          />
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                      Business Name
+                    </label>
+                    <input
+                      type="text"
+                      value={settings.businessName}
+                      onChange={(e) => handleSettingChange('businessName', e.target.value)}
+                      className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition-all"
+                      placeholder="Enter your business name"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                      Business Information
+                    </label>
+                    <textarea
+                      rows={3}
+                      value={settings.businessInfo}
+                      onChange={(e) => handleSettingChange('businessInfo', e.target.value)}
+                      className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition-all"
+                      placeholder="Enter information about your business..."
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                      Sales Representative Name
+                    </label>
+                    <input
+                      type="text"
+                      value={settings.salesRepName}
+                      onChange={(e) => handleSettingChange('salesRepName', e.target.value)}
+                      className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition-all"
+                      placeholder="Enter sales rep name"
+                    />
+                  </div>
+                </div>
               </div>
-            </div>
-
-            <div>
-              <label className="block text-sm font-medium text-gray-700">
-                Business Name
-              </label>
-              <input
-                type="text"
-                value={settings.businessName}
-                onChange={(e) =>
-                  setSettings({ ...settings, businessName: e.target.value })
-                }
-                className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm"
-              />
-            </div>
-
-            <div>
-              <label className="block text-sm font-medium text-gray-700">
-                Sales Representative Name
-              </label>
-              <input
-                type="text"
-                value={settings.salesRepName}
-                onChange={(e) =>
-                  setSettings({ ...settings, salesRepName: e.target.value })
-                }
-                className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm"
-              />
-            </div>
-
-            <div>
-              <label className="block text-sm font-medium text-gray-700">
-                Business Information
-              </label>
-              <textarea
-                rows={4}
-                value={settings.businessInfo}
-                onChange={(e) =>
-                  setSettings({ ...settings, businessInfo: e.target.value })
-                }
-                className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm"
-                placeholder="Enter information about your business, products, services, and any specific instructions for the AI..."
-              />
             </div>
 
             <button
               onClick={updateSettings}
-              disabled={loading}
-              className="w-full flex justify-center py-2 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500"
+              disabled={saving}
+              className="w-full flex justify-center py-3 px-4 border border-transparent rounded-lg shadow-sm text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
             >
-              {loading ? 'Saving...' : 'Save Settings'}
+              {saving ? (
+                <span className="flex items-center">
+                  <div className="animate-spin rounded-full h-4 w-4 border-2 border-white border-t-transparent mr-2"></div>
+                  Please wait...
+                </span>
+              ) : (
+                'Save Settings'
+              )}
             </button>
 
             {showCode && (
               <div className="mt-8 space-y-4">
-                <h2 className="text-lg font-medium text-gray-900">
-                  Install Widget on Your Website
-                </h2>
-                <p className="text-sm text-gray-600">
-                  Copy and paste this code snippet just before the closing &lt;/body&gt; tag of your website:
-                </p>
-                <div className="relative">
-                  <pre className="bg-gray-50 rounded-md p-4 overflow-x-auto text-sm">
-                    <code>{getWidgetCode()}</code>
-                  </pre>
+                <div className="flex items-center justify-between">
+                  <h2 className="text-lg font-medium text-gray-900">
+                    Install Widget on Your Website
+                  </h2>
                   <button
                     onClick={copyToClipboard}
-                    className="absolute top-2 right-2 px-3 py-1 text-sm bg-indigo-600 text-white rounded hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500"
+                    className="inline-flex items-center px-4 py-2 text-sm font-medium text-indigo-600 bg-indigo-50 rounded-lg hover:bg-indigo-100 transition-colors"
                   >
-                    Copy
+                    <ClipboardDocumentIcon className="h-5 w-5 mr-2" />
+                    Copy Code
                   </button>
+                </div>
+                <div className="relative">
+                  <pre className="bg-gray-50 rounded-lg p-4 overflow-x-auto text-sm">
+                    <code>{getWidgetCode()}</code>
+                  </pre>
                 </div>
               </div>
             )}
